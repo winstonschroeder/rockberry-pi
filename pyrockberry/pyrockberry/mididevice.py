@@ -1,9 +1,21 @@
 #!/usr/bin/env python3
 
-""" deal with all the alsa functions like connecting midi cards etc.. """
+""" deal with all the alsa functions like connecting midi cards etc.. 
+
+Further reading:
+* http://www.volkerschatz.com/noise/alsa.html explains the general alsa structure in detail.
+* http://www.sabi.co.uk/Notes/linuxSoundALSA.html explains the components of alsa:
+		* The hardware card level
+		* The kernel module level
+		* The /proc/asound kernel interface
+		* The /dev/snd device interface
+		* The ALSA library level
+
+"""
 
 
 import logging, alsaseq, alsamidi, subprocess, collections, re
+import json
 
 _aseqclient='rockberry-pi'
 _raveloxmidi_in_port = [16,0]
@@ -27,7 +39,7 @@ class MIDIServer(object):
 	_devicelist = []
 
 	def _aconnect_list(self):
-		""" Executes bash command aconnect -l and return parsed results as list of MIDIDevice. """
+		""" Executes bash command aconnect -l and return parsed results as list of dictionaries. """
 		acon = subprocess.Popen("aconnect -l", shell=True, stdout=subprocess.PIPE).stdout.read().decode('utf-8')
 		results = []
 		mdev = None
@@ -37,60 +49,89 @@ class MIDIServer(object):
 			subseqrow = re.search(r' *(\d+) ?\'([^\']+)\'', l)
 			if (firstrow):
 				parameters = dict(map(lambda x: x.split('='), firstrow.group(3).split(',')))
-				
 				if (mdev):
 					results.append(mdev)
-				mdev = MIDIDevice()
-				mdev.client = firstrow.group(1)
-				mdev.name = firstrow.group(2)
-				mdev.isvirutal = (parameters['type'] != 'Kernel')
+				mdev = dict(client = firstrow.group(1), name = firstrow.group(2), type = parameters['type'])
 				if ('card' in parameters):
-					mdev.card = parameters['card']
+					mdev['card'] = parameters['card']
 			if (subseqrow):
-				print(subseqrow.group(1))
+				if ('subdevices' not in mdev):
+					mdev['subdevices'] = []
+				mdev['subdevices'].append(dict(id=subseqrow.group(1), name=subseqrow.group(2).strip()))
 		if (mdev):
 			results.append(mdev)
 		return results
 		
 	def _amidi_list(self):
-		ami = subprocess.Popen("amidi -l", shell=True, stdout=subprocess.PIPE).stdout.read()
-		amidilist = []
-		head = ami
-		ami = ami.replace(b'  ', b'\t')
-		while (ami.find(b'\t\t')>0):
-			ami = ami.replace(b'\t\t',b'\t')
-		header = []
-		head = head.split(b'\n')[0]
-		ami = ami.split(b'\n')
-		for h in head.decode('utf-8').split(' '):
-			c = h.lstrip()
-			if (len(c)>1):
-				header.append(c)
-		for ln in ami[1:]:
-			cols = ln.decode('utf-8').split('\t')
-			if (len(cols) == len(header)):
-				amidilist.append( {header[0]:cols[0].lstrip(), header[1]:cols[1].lstrip(), header[2]:cols[2].lstrip(), } )
-		return amidilist
+		""" Executes bash command amidi -l and return parsed results as list of dictionaries. """
+		ami = subprocess.Popen("amidi -l", shell=True, stdout=subprocess.PIPE).stdout.read().decode('utf-8')
+		results = []
+		for l in ami.split('\n'):
+			rw = re.search(r'([IO]{1,2}) +(hw:\d,\d,?\d?) +([^\(]*)[\(]?(\d*)(?<= subdevices\))?', l)
+			if (rw):
+				mdev = dict(direction=rw.group(1), device=rw.group(2), name=rw.group(3))
+				if (rw.group(4)!=''):
+					mdev['subdevices'] = int(rw.group(4))
+				results.append(mdev)
+		return results
+		
+	def _aplaymidi_list(self):
+		""" Executes bash command amidi -l and return parsed results as list of dictionaries. """
+		apmi = subprocess.Popen("aplaymidi -l", shell=True, stdout=subprocess.PIPE).stdout.read().decode('utf-8')
+		results = []
+		for l in apmi.split('\n'):
+			rw = re.search(r'(\d+:\d+) +([\w\d\- ]+) {2,}([\w\d\- ]+)', l)
+			if (rw):
+				mdev = dict(port=rw.group(1), client=rw.group(2), port_name=rw.group(3))
+				results.append(mdev)
+		return results
+		
+	def _arecordmidi_list(self):
+		""" Executes bash command amidi -l and return parsed results as list of dictionaries. """
+		apmi = subprocess.Popen("arecordmidi -l", shell=True, stdout=subprocess.PIPE).stdout.read().decode('utf-8')
+		results = []
+		for l in apmi.split('\n'):
+			rw = re.search(r'(\d+:\d+) +([\w\d\- ]+) {2,}([\w\d\- ]+)', l)
+			if (rw):
+				mdev = dict(port=rw.group(1), client=rw.group(2), port_name=rw.group(3))
+				results.append(mdev)
+		return results
 		
 	def _aseqdump_list(self):
-		aseq = subprocess.Popen("aseqdump -l", shell=True, stdout=subprocess.PIPE).stdout.read()
-		aseq = aseq.replace(b'  ', b'\t')
-		aseqdump = []
-		while (aseq.find(b'\t\t')>0):
-			aseq = aseq.replace(b'\t\t',b'\t')
-		aseq = aseq.split(b'\n')
-		header = []
-		for h in aseq[0].decode('utf-8').split('\t'):
-			header.append(h.lstrip())
-		for ln in aseq[1:]:
-			cols = ln.decode('utf-8').split('\t')
-			if (len(cols) == len(header)):
-				aseqdump.append( {header[0]:cols[0].lstrip(), header[1]:cols[1].lstrip(), header[2]:cols[2].lstrip(), } )
-		return aseqdump
+		""" Executes bash command aseqdump -l and return parsed results as list of dictionaries. """
+		ase = subprocess.Popen("aseqdump -l", shell=True, stdout=subprocess.PIPE).stdout.read().decode('utf-8')
+		results = []
+		for l in ase.split('\n'):
+			rw = re.search(r' *(\d+:\d+) +([\w\d\- ]+) {2,}([\w\d\- ]+)' ,l)
+			if (rw):
+				mdev = dict(port = rw.group(1), clientname = rw.group(2).strip(), port_name = rw.group(3).strip())
+				results.append(mdev)
+		return results
+		
+	def _raveloxmidi_devices(self):
+		""" search in running processes for raveloxmidi, get the configuration file used and parse it for midi devices."""
+		rlm = subprocess.Popen("ps aux|grep raveloxmidi", shell=True, stdout=subprocess.PIPE).stdout.read().decode('utf-8')
+		mdev = None
+		for l in rlm.split('\n'):
+			rw = re.search(r'.*/usr/local/bin/raveloxmidi [\w\- ]+\-c ([^ ]*)', l)
+			if (rw):
+				file = rw.group(1)
+		if (file):
+			rlm = subprocess.Popen("cat {}".format(file), shell=True, stdout=subprocess.PIPE).stdout.read().decode('utf-8')
+			mdev = dict()
+			for l in rlm.split('\n'):
+				rw = re.search(r'[^\# ]*alsa.input_device = (.*)', l)
+				if (rw):
+					mdev['input_device'] = rw.group(1)
+				rw = re.search(r'[^\# ]*alsa.output_device = (.*)', l)
+				if (rw):
+					mdev['output_device'] = rw.group(1)
+			return mdev
+		return None
 
 	def _create_alsaseq_client(self, clientname=_aseqclient):
 		logging.debug('creating alsaseq client: {}'.format(clientname))
-		alsaseq.client(clientname,1,1,True)
+		alsaseq.client(clientname,2,3,True)
 		alsaseq.start()
 		
 	def _run_once(event):
@@ -115,8 +156,46 @@ class MIDIServer(object):
 	def update_devicelist(self):
 		""" Checks for available devices and updates internal list of MIDIDevices. """
 		ami = self._amidi_list()
+		apmi = self._aplaymidi_list()
+		armi = self._arecordmidi_list()
 		ase = self._aseqdump_list()
 		aco = self._aconnect_list()
+		rlm = self._raveloxmidi_devices()
+		devices = []
+		
+		print (json.dumps(apmi, sort_keys=True, indent=4))
+		
+		i = 0
+		for acon in aco:
+			## try matching the above results with each other
+			for sd in acon['subdevices']:
+				sd['port'] = '{}:{}'.format(acon['client'],sd['id'])
+				if ('card' in acon):
+						for amid in ami:
+							if (amid['device'][:6]=='hw:{},{}'.format(acon['card'],sd['id'])):
+								sd['amidiinfo'] = amid
+								# FIXME: hw assignment doesn't work over sd ID because in case of virtual midi it is always 0
+								# use ouput of aplaymidi instead
+								# print ('acon hw:{},{}'.format(acon['card'],sd['id']))
+								# print (amid['device'][:6])
+							for rlmi in rlm.items():
+								#print (amid['device'][:6])
+								if (rlmi[1][:6]==amid['device'][:6]):
+									#print ('found one')
+									sd['rtpmidi_usage'] = rlmi[0]
+				for aseq in ase:
+					if (aseq['port']==sd['port']):
+						sd['aseqdumpinfo'] = aseq
+				
+			## ... and create a list of midi devices
+			
+		#print(json.dumps(aco, sort_keys=True, indent=4))
+		
+		# for a in aco:
+			# if (a['name'] == 'rockberry-pi'):
+				# print (a)
+				
+		#print (aco[3])
 
 	def get_midi_devices(self):
 		self.update_devicelist()
@@ -131,22 +210,27 @@ class MIDIServer(object):
 			alsaseq.stop()
 			logging.info('keyboard interrupt stopped {}'.format(__name__))
 
+class MIDIDevicePort(object):
+	def __init__(self, port, portname, clientname):
+		self.port = port
+		self.portname = portname
+		self.clientname = clientname
+		self.connections = []
+
+class MIDIDeviceOutputPort(MIDIDevicePort):
+	pass
+
+class MIDIDeviceInputPort(MIDIDevicePort):
+	pass
+
 class MIDIDevice(object):
 	""" MIDIDevice combines all neccessary technical and semantical information on a MIDI Device """
 	def __init__(self):
 		self.card = ''							## see output of amidi -L
 		self.device = ''						## see output of amidi -L
 		self.subdevice = ''					## see output of amidi -L
-		self.direction = ''		
-		self.name = ''
-		self.isvirutal = False
-		self.altname = ''
-		self.alsaconnectto = []
-		self.alsaconnectfrom = []
-		self.outboardconnectto = ''
-		self.outboardconnectfrom = ''
-		self.channel_input_assignments = dict.fromkeys(list(map(lambda x:'ch{:02d}'.format(x), range(1,16))),'')
-		self.channel_output_assignments = dict.fromkeys(list(map(lambda x:'ch{:02d}'.format(x), range(1,16))),'')
+		self.input_ports = []
+		self.output_ports = []
 	
 	def repr(self):
 		return 'MIDIDevice: ' + self.name + ' {' + self.port + '}'
