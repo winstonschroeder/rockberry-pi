@@ -10,12 +10,12 @@ Further reading:
 		* The /proc/asound kernel interface
 		* The /dev/snd device interface
 		* The ALSA library level
-
+* https://alsa.opensrc.org/ all info you need!
 """
 
 
 import logging, alsaseq, alsamidi, subprocess, collections, re
-import json
+import utils
 
 _aseqclient='rockberry-pi'
 _raveloxmidi_in_port = [16,0]
@@ -41,6 +41,54 @@ class MIDIServer(object):
 	def _aconnect_list(self):
 		""" Executes bash command aconnect -l and return parsed results as list of dictionaries. """
 		acon = subprocess.Popen("aconnect -l", shell=True, stdout=subprocess.PIPE).stdout.read().decode('utf-8')
+		results = []
+		mdev = None
+		for l in acon.split('\n'):
+			client = re.search('(?<=client )\d{1,2}', l)
+			firstrow = re.search(r'client (\d+): \'([^\']*)\' \[([^\]]*)\]?', l)
+			subseqrow = re.search(r' *(\d+) ?\'([^\']+)\'', l)
+			if (firstrow):
+				parameters = dict(map(lambda x: x.split('='), firstrow.group(3).split(',')))
+				if (mdev):
+					results.append(mdev)
+				mdev = dict(client = firstrow.group(1), name = firstrow.group(2), type = parameters['type'])
+				if ('card' in parameters):
+					mdev['card'] = parameters['card']
+			if (subseqrow):
+				if ('subdevices' not in mdev):
+					mdev['subdevices'] = []
+				mdev['subdevices'].append(dict(id=subseqrow.group(1), name=subseqrow.group(2).strip()))
+		if (mdev):
+			results.append(mdev)
+		return results
+
+	def _aconnect_input(self):
+		""" Executes bash command aconnect -i and return parsed results as list of dictionaries. """
+		acon = subprocess.Popen("aconnect -i", shell=True, stdout=subprocess.PIPE).stdout.read().decode('utf-8')
+		results = []
+		mdev = None
+		for l in acon.split('\n'):
+			client = re.search('(?<=client )\d{1,2}', l)
+			firstrow = re.search(r'client (\d+): \'([^\']*)\' \[([^\]]*)\]?', l)
+			subseqrow = re.search(r' *(\d+) ?\'([^\']+)\'', l)
+			if (firstrow):
+				parameters = dict(map(lambda x: x.split('='), firstrow.group(3).split(',')))
+				if (mdev):
+					results.append(mdev)
+				mdev = dict(client = firstrow.group(1), name = firstrow.group(2), type = parameters['type'])
+				if ('card' in parameters):
+					mdev['card'] = parameters['card']
+			if (subseqrow):
+				if ('subdevices' not in mdev):
+					mdev['subdevices'] = []
+				mdev['subdevices'].append(dict(id=subseqrow.group(1), name=subseqrow.group(2).strip()))
+		if (mdev):
+			results.append(mdev)
+		return results
+		
+	def _aconnect_output(self):
+		""" Executes bash command aconnect -o and return parsed results as list of dictionaries. """
+		acon = subprocess.Popen("aconnect -o", shell=True, stdout=subprocess.PIPE).stdout.read().decode('utf-8')
 		results = []
 		mdev = None
 		for l in acon.split('\n'):
@@ -155,47 +203,61 @@ class MIDIServer(object):
 		
 	def update_devicelist(self):
 		""" Checks for available devices and updates internal list of MIDIDevices. """
-		ami = self._amidi_list()
-		apmi = self._aplaymidi_list()
-		armi = self._arecordmidi_list()
-		ase = self._aseqdump_list()
-		aco = self._aconnect_list()
-		rlm = self._raveloxmidi_devices()
 		devices = []
-		
-		print (json.dumps(apmi, sort_keys=True, indent=4))
-		
-		i = 0
-		for acon in aco:
-			## try matching the above results with each other
-			for sd in acon['subdevices']:
-				sd['port'] = '{}:{}'.format(acon['client'],sd['id'])
-				if ('card' in acon):
-						for amid in ami:
-							if (amid['device'][:6]=='hw:{},{}'.format(acon['card'],sd['id'])):
-								sd['amidiinfo'] = amid
-								# FIXME: hw assignment doesn't work over sd ID because in case of virtual midi it is always 0
-								# use ouput of aplaymidi instead
-								# print ('acon hw:{},{}'.format(acon['card'],sd['id']))
-								# print (amid['device'][:6])
-							for rlmi in rlm.items():
-								#print (amid['device'][:6])
-								if (rlmi[1][:6]==amid['device'][:6]):
-									#print ('found one')
-									sd['rtpmidi_usage'] = rlmi[0]
-				for aseq in ase:
-					if (aseq['port']==sd['port']):
-						sd['aseqdumpinfo'] = aseq
-				
-			## ... and create a list of midi devices
-			
-		#print(json.dumps(aco, sort_keys=True, indent=4))
-		
-		# for a in aco:
-			# if (a['name'] == 'rockberry-pi'):
-				# print (a)
-				
-		#print (aco[3])
+		# loop thorugh all asequencer related midi input and output devices and create them again
+		for i in self._aconnect_input():
+			mdev = MIDIDevice(i['name'], i['client'])
+			devices.append(mdev)
+			if ('subdevices' in i):
+				for s in i['subdevices']:
+					mdevprt = MIDIDeviceInputPort('{}:{}'.format(i['client'], s['id']), s['name'])
+					mdev.input_ports.append(mdevprt)
+		for o in self._aconnect_output():
+			mdev = MIDIDevice(o['name'], o['client'])
+			# helper variable in order join input and output ports of the same device
+			found = False
+			for d in devices:
+				if (d.name==mdev.name and d.client==mdev.client):
+					mdev = d
+					found = True
+					if ('subdevices' in o):
+						for s in o['subdevices']:
+							mdevprt = MIDIDeviceOutputPort('{}:{}'.format(o['client'], s['id']), s['name'])
+							mdev.output_ports.append(mdevprt)
+			# if current device has not been found until now it means, that the device doesn't have input ports
+			# and therefore now needs to be added to the list with outputs only
+			if (found==False):
+				devices.append(mdev)
+		# Diff already known devices and replace changes, remove cards no longer available and 
+		# preceive knowledge about adittional information.
+		## TODO: Find a way to diff contents
+		for i in devices:
+			if (len(i.output_ports)>1):
+				print (i.name)
+				# print (len(i.output_ports))
+				i.output_ports.pop()
+				# print (len(i.output_ports))
+		self._devicelist = devices
+		setOld = set(self._devicelist)
+		setNew = set(devices)
+		# print (len(setNew))
+		#dev = setNew.pop()
+		# print ('device {} removed, count of set is {}'.format(dev, len(setNew)))
+		setDiff = set.difference(setOld,setNew)
+		# print ('difference bewtween setNew and setOld is {}'.format(setDiff))
+		p=0
+		print ('setDiff')
+		for i in setDiff:
+			p = i.client
+			print (i)
+		print ('setOld')
+		for i in setOld:
+			if (i.client == p):
+				print (i)
+		print ('setNew')
+		for i in setNew:
+			if (i.client == p):
+				print (i)
 
 	def get_midi_devices(self):
 		self.update_devicelist()
@@ -211,11 +273,30 @@ class MIDIServer(object):
 			logging.info('keyboard interrupt stopped {}'.format(__name__))
 
 class MIDIDevicePort(object):
-	def __init__(self, port, portname, clientname):
+	def __init__(self, port, portname):
 		self.port = port
 		self.portname = portname
-		self.clientname = clientname
 		self.connections = []
+	def __str__(self):
+		return 'Name: {}, port: {}'.format(self.portname, self.port)
+	
+	def __eq__(self, other):
+		return ((self.port, self.portname, self.connections) == (other.port, other.portname, other.connections))
+		
+	def __ne__(self, other):
+		return ((self.port, self.portname, self.connections) != (other.port, other.portname, other.connections))
+		
+	def __lt__(self, other):
+		return ((self.port, self.portname, self.connections) < (other.port, other.portname, other.connections))
+	
+	def __le__(self, other):
+		return ((self.port, self.portname, self.connections) <= (other.port, other.portname, other.connections))
+		
+	def __ge__(self, other):
+		return ((self.port, self.portname, self.connections) >= (other.port, other.portname, other.connections))
+		
+	def __repr__(self):
+		return "%s %s %s" % (self.port, self.portname, repr(self.connections))
 
 class MIDIDeviceOutputPort(MIDIDevicePort):
 	pass
@@ -225,15 +306,38 @@ class MIDIDeviceInputPort(MIDIDevicePort):
 
 class MIDIDevice(object):
 	""" MIDIDevice combines all neccessary technical and semantical information on a MIDI Device """
-	def __init__(self):
-		self.card = ''							## see output of amidi -L
-		self.device = ''						## see output of amidi -L
-		self.subdevice = ''					## see output of amidi -L
+	def __init__(self, name, client):
+		self.client = client
+		self.name = name
 		self.input_ports = []
 		self.output_ports = []
+	
+	def __eq__(self, other):
+		return ((self.client, self.name, self.input_ports, self.output_ports) == (other.client, other.name, other.input_ports, other.output_ports))
+		
+	def __ne__(self, other):
+		return ((self.client, self.name, self.input_ports, self.output_ports) != (other.client, other.name, other.input_ports, other.output_ports))
+		
+	def __lt__(self, other):
+		return ((self.client, self.name, self.input_ports, self.output_ports) < (other.client, other.name, other.input_ports, other.output_ports))
+		
+	def __le__(self, other):
+		return ((self.client, self.name, self.input_ports, self.output_ports) <= (other.client, other.name, other.input_ports, other.output_ports))
+		
+	def __ge__(self, other):
+		return ((self.client, self.name, self.input_ports, self.output_ports) > (other.client, other.name, other.input_ports, other.output_ports))
+				
+	def __repr__(self, other):
+		return "%s %s %s %s" % (self.client, self.name, repr(self.input_ports), repr(self.output_ports))
 	
 	def repr(self):
 		return 'MIDIDevice: ' + self.name + ' {' + self.port + '}'
 		
 	def __str__(self):
-		return 'MIDIDevice: ' + self.name + ' {' + self.card + '}'
+		res = 'MIDIDevice:\n\t' + self.name + '\n\tPort:\t' + self.client + '\n\n\tInput Ports:\n'
+		for i in self.input_ports:
+			res += '\t\t{}\n'.format(i)
+		res += '\n\n\tOutput Ports:\n'
+		for o in self.output_ports:
+			res += '\t\t{}\n'.format(o)
+		return res
