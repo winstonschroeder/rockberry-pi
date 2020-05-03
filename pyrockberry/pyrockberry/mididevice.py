@@ -15,6 +15,8 @@ Further reading:
 
 
 import logging, alsaseq, alsamidi, subprocess, collections, re
+import json
+from json import JSONEncoder
 import utils
 
 _aseqclient='rockberry-pi'
@@ -217,7 +219,7 @@ class MIDIServer(object):
 			# helper variable in order join input and output ports of the same device
 			found = False
 			for d in devices:
-				if (d.name==mdev.name and d.client==mdev.client):
+				if (d == mdev):
 					mdev = d
 					found = True
 					if ('subdevices' in o):
@@ -232,32 +234,33 @@ class MIDIServer(object):
 		# preceive knowledge about adittional information.
 		## TODO: Find a way to diff contents
 		for i in devices:
-			if (len(i.output_ports)>1):
-				print (i.name)
+			# if (len(i.output_ports)>1):
+			print (repr(i))
 				# print (len(i.output_ports))
-				i.output_ports.pop()
+				# i.output_ports.pop()
 				# print (len(i.output_ports))
-		self._devicelist = devices
-		setOld = set(self._devicelist)
-		setNew = set(devices)
-		# print (len(setNew))
-		#dev = setNew.pop()
-		# print ('device {} removed, count of set is {}'.format(dev, len(setNew)))
-		setDiff = set.difference(setOld,setNew)
+
+		# self._devicelist = devices
+		# setOld = set(self._devicelist)
+		# setNew = set(devices)
+		# # print (len(setNew))
+		# #dev = setNew.pop()
+		# # print ('device {} removed, count of set is {}'.format(dev, len(setNew)))
+		# setDiff = set.difference(setOld,setNew)
 		# print ('difference bewtween setNew and setOld is {}'.format(setDiff))
-		p=0
-		print ('setDiff')
-		for i in setDiff:
-			p = i.client
-			print (i)
-		print ('setOld')
-		for i in setOld:
-			if (i.client == p):
-				print (i)
-		print ('setNew')
-		for i in setNew:
-			if (i.client == p):
-				print (i)
+		# p=0
+		# print ('setDiff')
+		# for i in setDiff:
+			# p = i.client
+			# print (i)
+		# print ('setOld')
+		# for i in setOld:
+			# if (i.client == p):
+				# print (i)
+		# print ('setNew')
+		# for i in setNew:
+			# if (i.client == p):
+				# print (i)
 
 	def get_midi_devices(self):
 		self.update_devicelist()
@@ -277,9 +280,7 @@ class MIDIDevicePort(object):
 		self.port = port
 		self.portname = portname
 		self.connections = []
-	def __str__(self):
-		return 'Name: {}, port: {}'.format(self.portname, self.port)
-	
+		
 	def __eq__(self, other):
 		return ((self.port, self.portname, self.connections) == (other.port, other.portname, other.connections))
 		
@@ -294,12 +295,18 @@ class MIDIDevicePort(object):
 		
 	def __ge__(self, other):
 		return ((self.port, self.portname, self.connections) >= (other.port, other.portname, other.connections))
-		
 	def __repr__(self):
-		return "%s %s %s" % (self.port, self.portname, repr(self.connections))
+		return '{}'.format(json.dumps(self.__dict__, sort_keys=True, indent=4))
+	def __str__(self):
+		return 'Name: {}, port: {}'.format(self.portname, self.port)
+
+class MidiJSONEncoder(JSONEncoder):
+        def default(self, o):
+            return o.__dict__
 
 class MIDIDeviceOutputPort(MIDIDevicePort):
 	pass
+
 
 class MIDIDeviceInputPort(MIDIDevicePort):
 	pass
@@ -327,17 +334,9 @@ class MIDIDevice(object):
 	def __ge__(self, other):
 		return ((self.client, self.name, self.input_ports, self.output_ports) > (other.client, other.name, other.input_ports, other.output_ports))
 				
-	def __repr__(self, other):
-		return "%s %s %s %s" % (self.client, self.name, repr(self.input_ports), repr(self.output_ports))
-	
-	def repr(self):
-		return 'MIDIDevice: ' + self.name + ' {' + self.port + '}'
+	def __repr__(self):
+		return '{}'.format(json.dumps(self.__dict__, sort_keys=True, indent=4, cls=MidiJSONEncoder))
+
 		
 	def __str__(self):
-		res = 'MIDIDevice:\n\t' + self.name + '\n\tPort:\t' + self.client + '\n\n\tInput Ports:\n'
-		for i in self.input_ports:
-			res += '\t\t{}\n'.format(i)
-		res += '\n\n\tOutput Ports:\n'
-		for o in self.output_ports:
-			res += '\t\t{}\n'.format(o)
-		return res
+		return 'Client: {}, Name: {}'.format(self.client, self.name)
