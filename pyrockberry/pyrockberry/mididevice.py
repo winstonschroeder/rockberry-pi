@@ -38,7 +38,7 @@ class MIDIServer(object):
 	They can be virtual or hardware. 
 	"""
 	
-	_devicelist = []
+	devicelist = []
 
 	def _aconnect_list(self):
 		""" Executes bash command aconnect -l and return parsed results as list of dictionaries. """
@@ -112,52 +112,6 @@ class MIDIServer(object):
 			results.append(mdev)
 		return results
 		
-	def _amidi_list(self):
-		""" Executes bash command amidi -l and return parsed results as list of dictionaries. """
-		ami = subprocess.Popen("amidi -l", shell=True, stdout=subprocess.PIPE).stdout.read().decode('utf-8')
-		results = []
-		for l in ami.split('\n'):
-			rw = re.search(r'([IO]{1,2}) +(hw:\d,\d,?\d?) +([^\(]*)[\(]?(\d*)(?<= subdevices\))?', l)
-			if (rw):
-				mdev = dict(direction=rw.group(1), device=rw.group(2), name=rw.group(3))
-				if (rw.group(4)!=''):
-					mdev['subdevices'] = int(rw.group(4))
-				results.append(mdev)
-		return results
-		
-	def _aplaymidi_list(self):
-		""" Executes bash command amidi -l and return parsed results as list of dictionaries. """
-		apmi = subprocess.Popen("aplaymidi -l", shell=True, stdout=subprocess.PIPE).stdout.read().decode('utf-8')
-		results = []
-		for l in apmi.split('\n'):
-			rw = re.search(r'(\d+:\d+) +([\w\d\- ]+) {2,}([\w\d\- ]+)', l)
-			if (rw):
-				mdev = dict(port=rw.group(1), client=rw.group(2), port_name=rw.group(3))
-				results.append(mdev)
-		return results
-		
-	def _arecordmidi_list(self):
-		""" Executes bash command amidi -l and return parsed results as list of dictionaries. """
-		apmi = subprocess.Popen("arecordmidi -l", shell=True, stdout=subprocess.PIPE).stdout.read().decode('utf-8')
-		results = []
-		for l in apmi.split('\n'):
-			rw = re.search(r'(\d+:\d+) +([\w\d\- ]+) {2,}([\w\d\- ]+)', l)
-			if (rw):
-				mdev = dict(port=rw.group(1), client=rw.group(2), port_name=rw.group(3))
-				results.append(mdev)
-		return results
-		
-	def _aseqdump_list(self):
-		""" Executes bash command aseqdump -l and return parsed results as list of dictionaries. """
-		ase = subprocess.Popen("aseqdump -l", shell=True, stdout=subprocess.PIPE).stdout.read().decode('utf-8')
-		results = []
-		for l in ase.split('\n'):
-			rw = re.search(r' *(\d+:\d+) +([\w\d\- ]+) {2,}([\w\d\- ]+)' ,l)
-			if (rw):
-				mdev = dict(port = rw.group(1), clientname = rw.group(2).strip(), port_name = rw.group(3).strip())
-				results.append(mdev)
-		return results
-		
 	def _raveloxmidi_devices(self):
 		""" search in running processes for raveloxmidi, get the configuration file used and parse it for midi devices."""
 		rlm = subprocess.Popen("ps aux|grep raveloxmidi", shell=True, stdout=subprocess.PIPE).stdout.read().decode('utf-8')
@@ -207,64 +161,16 @@ class MIDIServer(object):
 		""" Checks for available devices and updates internal list of MIDIDevices. """
 		devices = []
 		# loop thorugh all asequencer related midi input and output devices and create them again
-		for i in self._aconnect_input():
-			mdev = MIDIDevice(i['name'], i['client'])
-			devices.append(mdev)
-			if ('subdevices' in i):
-				for s in i['subdevices']:
-					mdevprt = MIDIDeviceInputPort('{}:{}'.format(i['client'], s['id']), s['name'])
-					mdev.input_ports.append(mdevprt)
-		for o in self._aconnect_output():
-			mdev = MIDIDevice(o['name'], o['client'])
-			# helper variable in order join input and output ports of the same device
-			found = False
-			for d in devices:
-				if (d == mdev):
-					mdev = d
-					found = True
-					if ('subdevices' in o):
-						for s in o['subdevices']:
-							mdevprt = MIDIDeviceOutputPort('{}:{}'.format(o['client'], s['id']), s['name'])
-							mdev.output_ports.append(mdevprt)
-			# if current device has not been found until now it means, that the device doesn't have input ports
-			# and therefore now needs to be added to the list with outputs only
-			if (found==False):
-				devices.append(mdev)
-		# Diff already known devices and replace changes, remove cards no longer available and 
-		# preceive knowledge about adittional information.
-		## TODO: Find a way to diff contents
-		for i in devices:
-			# if (len(i.output_ports)>1):
-			print (repr(i))
-				# print (len(i.output_ports))
-				# i.output_ports.pop()
-				# print (len(i.output_ports))
-
-		# self._devicelist = devices
-		# setOld = set(self._devicelist)
-		# setNew = set(devices)
-		# # print (len(setNew))
-		# #dev = setNew.pop()
-		# # print ('device {} removed, count of set is {}'.format(dev, len(setNew)))
-		# setDiff = set.difference(setOld,setNew)
-		# print ('difference bewtween setNew and setOld is {}'.format(setDiff))
-		# p=0
-		# print ('setDiff')
-		# for i in setDiff:
-			# p = i.client
-			# print (i)
-		# print ('setOld')
-		# for i in setOld:
-			# if (i.client == p):
-				# print (i)
-		# print ('setNew')
-		# for i in setNew:
-			# if (i.client == p):
-				# print (i)
-
+		lst = self._aconnect_list()
+		for i in lst:
+			d = MIDIDevice(i['name'], i['client'])
+			d.update_subdevices(i['subdevices'])
+			devices.append(d)
+		utils.update_list(self.devicelist, devices)
+				
 	def get_midi_devices(self):
 		self.update_devicelist()
-		return self._devicelist
+		return self.devicelist
 	
 	def run():
 		try:
@@ -275,7 +181,7 @@ class MIDIServer(object):
 			alsaseq.stop()
 			logging.info('keyboard interrupt stopped {}'.format(__name__))
 
-class MIDIDevicePort(object):
+class MIDISubdevice(object):
 	def __init__(self, port, portname):
 		self.port = port
 		self.portname = portname
@@ -300,24 +206,12 @@ class MIDIDevicePort(object):
 	def __str__(self):
 		return 'Name: {}, port: {}'.format(self.portname, self.port)
 
-class MidiJSONEncoder(JSONEncoder):
-        def default(self, o):
-            return o.__dict__
-
-class MIDIDeviceOutputPort(MIDIDevicePort):
-	pass
-
-
-class MIDIDeviceInputPort(MIDIDevicePort):
-	pass
-
 class MIDIDevice(object):
 	""" MIDIDevice combines all neccessary technical and semantical information on a MIDI Device """
 	def __init__(self, name, client):
 		self.client = client
 		self.name = name
-		self.input_ports = []
-		self.output_ports = []
+		self.subdevices = []
 	
 	def __eq__(self, other):
 		return ((self.client, self.name, self.input_ports, self.output_ports) == (other.client, other.name, other.input_ports, other.output_ports))
@@ -337,6 +231,12 @@ class MIDIDevice(object):
 	def __repr__(self):
 		return '{}'.format(json.dumps(self.__dict__, sort_keys=True, indent=4, cls=MidiJSONEncoder))
 
-		
 	def __str__(self):
 		return 'Client: {}, Name: {}'.format(self.client, self.name)
+
+	def update_subdevices(self, data):
+		subdevices = []
+		for i in data:
+			sd = MIDISubdevice(i['id'], i['name'])
+			subdevices.append(sd)
+		utils.update_list(self.subdevices, subdevices)
